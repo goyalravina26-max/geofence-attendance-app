@@ -33,8 +33,9 @@
     },
     "extra": {
       "eas": {
-        "projectId": "749050c2-ea3f-46a6-9ff9-6452e351ea60"
+        "projectId": "9639be3b-e61b-4638-94f4-1be95cc7245a"
       }
-    }
+    },
+    "owner": "ravinagoyal"
   }
 }
