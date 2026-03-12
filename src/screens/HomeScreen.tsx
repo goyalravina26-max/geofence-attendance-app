@@ -43,6 +43,13 @@ const HomeScreen: React.FC = () => {
   const subscriptionRef = useRef<Location.LocationSubscription | null>(null);
   const settingsReturnRefreshRef = useRef(false);
   const requestedOnceRef = useRef(false);
+  const gpsPollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const lastGpsEnabledRef = useRef<boolean | null>(null);
+  const permissionGrantedRef = useRef(false);
+
+  useEffect(() => {
+    permissionGrantedRef.current = state.permissionGranted;
+  }, [state.permissionGranted]);
 
   useEffect(() => {
     const loadStatus = async () => {
@@ -73,6 +80,7 @@ const HomeScreen: React.FC = () => {
     try {
       const servicesEnabled = await checkLocationServicesEnabled();
       if (!servicesEnabled) {
+        lastGpsEnabledRef.current = false;
         setState(prev => ({
           ...prev,
           gpsEnabled: false,
@@ -81,6 +89,7 @@ const HomeScreen: React.FC = () => {
         }));
         return;
       }
+      lastGpsEnabledRef.current = true;
 
       // If user enabled permission from Settings, refresh current status.
       const currentPerm = await Location.getForegroundPermissionsAsync();
@@ -141,7 +150,43 @@ const HomeScreen: React.FC = () => {
     }
   };
 
+  const syncGpsEnabled = async () => {
+    try {
+      const enabled = await checkLocationServicesEnabled();
+      if (lastGpsEnabledRef.current === enabled) return;
+      lastGpsEnabledRef.current = enabled;
+
+      if (!enabled) {
+        stopWatching();
+        setState(prev => ({
+          ...prev,
+          gpsEnabled: false,
+          insideGeofence: false,
+          loading: false,
+          error: 'Location services (GPS) are disabled.',
+        }));
+        return;
+      }
+
+      setState(prev => ({
+        ...prev,
+        gpsEnabled: true,
+        error:
+          prev.error === 'Location services (GPS) are disabled.' ? null : prev.error,
+      }));
+
+      // If permission is already granted, resume updates without prompting again.
+      if (permissionGrantedRef.current) {
+        initOrRefresh(false);
+      }
+    } catch {
+      // ignore polling failures
+    }
+  };
+
   initOrRefresh(true);
+  // Poll GPS enabled status while app is open (handles toggling GPS on/off without restarting app)
+  gpsPollTimerRef.current = setInterval(syncGpsEnabled, 2000);
 
   const onAppStateChange = (nextState: AppStateStatus) => {
     // Refresh only when returning to foreground (prevents repeated flicker/blink).
@@ -163,6 +208,7 @@ const HomeScreen: React.FC = () => {
   return () => {
     appStateSub.remove();
     if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
+    if (gpsPollTimerRef.current) clearInterval(gpsPollTimerRef.current);
     stopWatching();
   };
 }, []);
@@ -260,119 +306,121 @@ const HomeScreen: React.FC = () => {
 }, [location, insideGeofence, checkedIn]);
 
   return (
-    <ScrollView style={styles.container}>
-
-    <View style={styles.header}>
-      <Text style={styles.headerTitle}>Office Attendance</Text>
-    </View>
-
-      {!gpsEnabled && (
-        <Text style={styles.warning}>
-          GPS is disabled. Please enable Location Services in device settings.
-        </Text>
-      )}
-
-      {error ? <Text style={styles.warning}>{error}</Text> : null}
-
-      {!permissionGranted && !loading && (
-        <Pressable
-          style={styles.settingsButton}
-          onPress={() => {
-            settingsReturnRefreshRef.current = true;
-            Linking.openSettings().catch(() => {
-              Alert.alert(
-                'Open Settings',
-                Platform.select({
-                  ios: 'Please open Settings > Privacy > Location Services and enable location for this app.',
-                  android: 'Please open Settings > Apps > Attendance App and enable Location permission.',
-                  default: 'Please open system settings and enable location permission for this app.',
-                }) as string
-              );
-            });
-          }}
-        >
-          <Text style={styles.settingsButtonText}>Open App Settings</Text>
-        </Pressable>
-      )}
-
-      <View style={styles.mapContainer}>
-        {hasLocation && region ? (
-          <MapView
-            style={styles.map}
-            initialRegion={{
-              ...OFFICE_LOCATION,
-              latitudeDelta: 0.01,
-              longitudeDelta: 0.01,
-            }}
-            {...(region ? { region } : {})}
-          >
-            <Circle
-              center={OFFICE_LOCATION}
-              radius={GEOFENCE_RADIUS_METERS}
-              strokeColor={insideGeofence ? 'rgba(22,163,74,0.9)' : 'rgba(220,38,38,0.9)'}
-              fillColor={insideGeofence ? 'rgba(22,163,74,0.2)' : 'rgba(220,38,38,0.2)'}
-            />
-
-            <Marker coordinate={OFFICE_LOCATION} title="Office">
-                <Text style={styles.markerText}>🏢</Text>
-              </Marker>
-            
-           {hasLocation  && (
-              <Marker
-                coordinate={{ latitude: latitude!, longitude: longitude! }}
-                title="You"
-                pinColor={insideGeofence ? "green" : "red"}
-              />
-            )}
-          </MapView>
-        ) : (
-          <View style={styles.mapPlaceholder}>
-            <Text style={styles.placeholderText}>Waiting for location...</Text>
-          </View>
+    <>
+      <View style={styles.header}>
+        <Text style={styles.headerTitle}>Office Attendance</Text>
+      </View>
+      <ScrollView style={styles.container}>
+        {!gpsEnabled && (
+          <Text style={styles.warning}>
+            GPS is disabled. Please enable Location Services in device settings.
+          </Text>
         )}
-      </View>
 
-      <View style={styles.card}>
-        <Text style={styles.sectionTitle}>Office Location</Text>
-        <Text style={styles.officeText}>Geofence Radius: 100m</Text>
-         <View style={styles.divider} />
-          {distance !== null && (
-          <>
-          <Text style={styles.sectionTitle}>Distance from Office</Text>
-          <Text style={styles.officeText}>{distance} meters</Text>
-          </>
+        {error ? <Text style={styles.warning}>{error}</Text> : null}
+
+        {!permissionGranted && !loading && (
+          <Pressable
+            style={styles.settingsButton}
+            onPress={() => {
+              settingsReturnRefreshRef.current = true;
+              Linking.openSettings().catch(() => {
+                Alert.alert(
+                  'Open Settings',
+                  Platform.select({
+                    ios: 'Please open Settings > Privacy > Location Services and enable location for this app.',
+                    android: 'Please open Settings > Apps > Attendance App and enable Location permission.',
+                    default: 'Please open system settings and enable location permission for this app.',
+                  }) as string
+                );
+              });
+            }}
+          >
+            <Text style={styles.settingsButtonText}>Open App Settings</Text>
+          </Pressable>
+        )}
+
+        <View style={styles.mapContainer}>
+          {hasLocation && region ? (
+            <MapView
+              style={styles.map}
+              initialRegion={{
+                ...OFFICE_LOCATION,
+                latitudeDelta: 0.01,
+                longitudeDelta: 0.01,
+              }}
+              {...(region ? { region } : {})}
+            >
+              <Circle
+                center={OFFICE_LOCATION}
+                radius={GEOFENCE_RADIUS_METERS}
+                strokeColor={insideGeofence ? 'rgba(22,163,74,0.9)' : 'rgba(220,38,38,0.9)'}
+                fillColor={insideGeofence ? 'rgba(22,163,74,0.2)' : 'rgba(220,38,38,0.2)'}
+              />
+
+              <Marker coordinate={OFFICE_LOCATION} title="Office">
+                  <Text style={styles.markerText}>🏢</Text>
+                </Marker>
+              
+            {hasLocation  && (
+                <Marker
+                  coordinate={{ latitude: latitude!, longitude: longitude! }}
+                  title="You"
+                  pinColor={insideGeofence ? "green" : "red"}
+                />
+              )}
+            </MapView>
+          ) : (
+            <View style={styles.mapPlaceholder}>
+              <Text style={styles.placeholderText}>Waiting for location...</Text>
+            </View>
           )}
-        <View style={styles.statusContainer}>
-        <Text style={styles.statusLabel}>Status:</Text>
+        </View>
 
-        <Text
-          style={[
-            styles.statusBadge,
-            insideGeofence ? styles.statusInside : styles.statusOutside,
-          ]}
-        >
-          {insideGeofence ? 'Inside Geofence' : 'Outside Geofence'}
-        </Text>
+        <View style={styles.card}>
+          <Text style={styles.sectionTitle}>Office Location</Text>
+          <Text style={styles.officeText}>Geofence Radius: 100m</Text>
+          
+            {distance !== null && (
+            <>
+            <View style={styles.divider} />
+            <Text style={styles.sectionTitle}>Distance from Office</Text>
+            <Text style={styles.officeText}>{distance} meters</Text>
+            </>
+            )}
+          <View style={styles.statusContainer}>
+          <Text style={styles.statusLabel}>Status:</Text>
+
+          <Text
+            style={[
+              styles.statusBadge,
+              insideGeofence ? styles.statusInside : styles.statusOutside,
+            ]}
+          >
+            {insideGeofence ? 'Inside Geofence' : 'Outside Geofence'}
+          </Text>
+        </View>
       </View>
-    </View>
 
-      <CheckInButton
-        loading={loading}
-        saving={saving}
-        disabled={loading || saving || !insideGeofence || !gpsEnabled || !permissionGranted}
-        disabledReason={disabledReason}
-        title={checkedIn ? "Check Out" : "Check In"}
-        savingTitle={checkedIn ? "Checking out..." : "Checking in..."}
-        onPress={handleAttendanceAction}
-        backgroundColor={checkedIn ? "#ef4444" : "#22c55e"}
-      />
+        <CheckInButton
+          loading={loading}
+          saving={saving}
+          disabled={loading || saving || !insideGeofence || !gpsEnabled || !permissionGranted}
+          disabledReason={disabledReason}
+          title={checkedIn ? "Check Out" : "Check In"}
+          savingTitle={checkedIn ? "Checking out..." : "Checking in..."}
+          onPress={handleAttendanceAction}
+          backgroundColor={checkedIn ? "#ef4444" : "#22c55e"}
+        />
 
-      <Text style={styles.offlineNote}>
-        Note: Attendance is stored locally and works offline. Map tiles may not load without
-        internet.
-      </Text>
+        <Text style={styles.offlineNote}>
+          Note: Attendance is stored locally and works offline. Map tiles may not load without
+          internet.
+        </Text>
 
-    </ScrollView>
+      </ScrollView>
+    
+    </>
   );
 };
 
@@ -380,6 +428,7 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#f1f5f9',
+    marginBottom: 8
   },
 
   header: {
@@ -503,8 +552,9 @@ const styles = StyleSheet.create({
   offlineNote: {
     textAlign: 'center',
     marginTop: 12,
-    fontSize: 11,
+    fontSize: 12,
     color: '#6b7280',
+    marginHorizontal: 6,
   },
   officeMarker: {
   backgroundColor: "#2563eb",

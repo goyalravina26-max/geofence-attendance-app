@@ -77,7 +77,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 10,
   },
-  helper: { marginTop: 8, fontSize: 12, color: '#b45309' },
+  helper: { marginTop: 8, fontSize: 12, color: '#b45309',marginHorizontal: 12, },
 });
 
 export default CheckInButton;
